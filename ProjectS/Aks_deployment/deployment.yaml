@@ -1,0 +1,185 @@
+# Define a namespace for the application
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: nginx-app
+---
+# Define a Persistent Volume (PV) for data storage
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: nginx-pv
+  namespace: nginx-app # Namespaces isolate resources; the PV belongs to nginx-app
+spec:
+  capacity:
+    storage: 1Gi # Size of the storage
+  accessModes:
+    - ReadWriteOnce # Can be mounted as read/write by a single node
+  persistentVolumeReclaimPolicy: Retain # Prevent automatic deletion of data when the PV is released
+  hostPath:
+    path: /mnt/nginx-pv # Path on the host node where data will be stored
+---
+# Define a Persistent Volume Claim (PVC) to request the PV
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: nginx-pvc
+  namespace: nginx-app
+spec:
+  accessModes:
+    - ReadWriteOnce # Matches the PV access mode
+  resources:
+    requests:
+      storage: 1Gi # Amount of storage requested
+---
+# ConfigMap to manage NGINX configuration or static content
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nginx-config
+  namespace: nginx-app
+data:
+  index.html: | # HTML content served by NGINX
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <title>Welcome to Subba-NGINX!</title>
+    </head>
+    <body>
+      <h1>Welcome to Subba-NGINX!</h1>
+    </body>
+    </html>
+---
+# Secret to store sensitive data (e.g., credentials) securely
+apiVersion: v1
+kind: Secret
+metadata:
+  name: nginx-secret
+  namespace: nginx-app
+type: Opaque
+data:
+  username: dXNlcm5hbWU= # Base64 encoded 'username'
+  password: cGFzc3dvcmQ= # Base64 encoded 'password'
+---
+# Deployment to manage NGINX pods
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx-deployment
+  namespace: nginx-app
+spec:
+  replicas: 3 # Number of pod replicas
+  selector:
+    matchLabels:
+      app: nginx # Labels for selecting the pods
+  template:
+    metadata:
+      labels:
+        app: nginx # Ensure pods have the correct label
+    spec:
+      containers:
+      - name: nginx
+        image: subba-nginx:latest # Custom Docker image for NGINX
+        ports:
+        - containerPort: 80 # Port exposed by the container
+        volumeMounts:
+        - mountPath: /usr/share/nginx/html # Path inside the container
+          name: html-volume
+        env: # Environment variables from Secret
+        - name: USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: nginx-secret
+              key: username
+        - name: PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: nginx-secret
+              key: password
+        livenessProbe: # Health check to ensure the pod is running
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        readinessProbe: # Check pod readiness to serve traffic
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        resources: # Define resource requests and limits
+          requests:
+            memory: "128Mi"
+            cpu: "250m"
+          limits:
+            memory: "256Mi"
+            cpu: "500m"
+      volumes: # Use PVC for data persistence
+      - name: html-volume
+        persistentVolumeClaim:
+          claimName: nginx-pvc
+---
+# Service to expose the Deployment internally in the cluster
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-service
+  namespace: nginx-app
+spec:
+  selector:
+    app: nginx # Match pods labeled 'app: nginx'
+  ports:
+  - protocol: TCP
+    port: 80 # Port for accessing the service
+    targetPort: 80 # Port exposed by the pods
+  type: ClusterIP # Internal cluster access only
+---
+# DaemonSet to ensure NGINX pods run on all nodes
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: nginx-daemon
+  namespace: nginx-app
+spec:
+  selector:
+    matchLabels:
+      app: nginx-daemon
+  template:
+    metadata:
+      labels:
+        app: nginx-daemon # Ensure DaemonSet pods are properly labeled
+    spec:
+      containers:
+      - name: nginx
+        image: subba-nginx:latest # Custom Docker image for DaemonSet pods
+        ports:
+        - containerPort: 80
+        resources: # Resource allocation for each DaemonSet pod
+          requests:
+            cpu: "250m"
+            memory: "128Mi"
+          limits:
+            cpu: "500m"
+            memory: "256Mi"
+---
+# Ingress resource to expose the application externally
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: nginx-ingress
+  namespace: nginx-app
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: / # Rewrite path for requests
+spec:
+  rules:
+  - host: nginx.local # Hostname for accessing the service
+    http:
+      paths:
+      - path: / # Path to access the service
+        pathType: Prefix
+        backend:
+          service:
+            name: nginx-service # Service to route traffic to
+            port:
+              number: 80
